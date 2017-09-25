@@ -12,6 +12,10 @@
 
 ![通信框架](img/通信框架.png)
 
+程序数据流图如下：
+
+![数据流图](img/数据流图.png)
+
 整个团队包括多名来自电信学院和机汽学院学生，而本人负责的部分有遥控数据处理，Uart2Can转换板，电机驱动板、stm32主控，接着主要总结负责的部分。
 
 ### 遥控器
@@ -131,11 +135,11 @@ __task void Usart2CAN(void)//通过CAN把NRF的数据转发下去
 	u8 mbox;
 	uint16_t i=0,j;
 	/*CAN通信报文内容设置，需要清楚CAN协议数据帧报文格式*/
-   tx_message.DLC = 8;          //数据长度为8字节，最多为8个字节
-	 tx_message.StdId = SndCanID;    // 标准标识符  0 到0x7FF
-   tx_message.ExtId = 0x1314;    // 设置扩展标示符 0 到0x3FFFF
-   tx_message.IDE = CAN_ID_STD;    //IDE 消息标识符的类型 CAN_ID_STD  使用标准标识符 CAN_ID_EXT  标准标识符 + 扩展标识符
-   tx_message.RTR = CAN_RTR_DATA;  //数据帧
+   	tx_message.DLC = 8;          //数据长度为8字节，最多为8个字节
+	tx_message.StdId = SndCanID;    // 标准标识符  0 到0x7FF
+   	tx_message.ExtId = 0x1314;    // 设置扩展标示符 0 到0x3FFFF
+   	tx_message.IDE = CAN_ID_STD;    //IDE 消息标识符的类型 CAN_ID_STD  使用标准标识符 CAN_ID_EXT  标准标识符 + 扩展标识符
+  	tx_message.RTR = CAN_RTR_DATA;  //数据帧
 	while(1)
 	{	
 		if(Usart_receive(1,(void **)&pMsg,10000) != OS_R_TMO)
@@ -166,22 +170,104 @@ __task void CAN_Receive(void)
     while(1)
    {
         if (CAN_receive (1, 0,&msg_rece,1000) != OS_R_TMO)//接收到CAN数据
+			{
+				/************CAN 查询帧处**********/
+				if(msg_rece->StdId ==	RecvCanID //本机ID为0x1314
 				{
-					/************CAN 查询帧处理**********/
-					if(msg_rece->StdId ==	RecvCanID )//本机ID为0x1314
-					{
-						os_mut_wait (&u1_mutex, 0xffff);
-						printf("Can Recev :%d\r\n",msg_rece->Data[0]);
-						os_mut_release (&u1_mutex);
-					}
+					os_mut_wait (&u1_mutex, 0xffff;
+					printf("Can Recev :%d\r\n"msg_rece->Data[0]);
+					os_mut_release (&u1_mutex);
 				}
-		  os_dly_wait(100);
+			}
+		os_dly_wait(100);
     }
 }
 ```
 
 ### 电机驱动板
+主控生成PWM信号驱动能力过弱，需要通过驱动板放大来控制电机。
 
+PCB图如下：
+
+![driver](img/driver.png)
 
 ### stm32主控
+stm32主控衔接迷你PC和电机等嵌入式模块，即外围设备的核心，负责驱动电机、检测漏水、获取腔体姿态等工作
 
+PCB图如下：
+
+![master](img/master.png)
+
+主控代码：此处只展示接收can数据帧，转换为控制电机的部分
+
+```C
+/**
+ * [CAN1_Rec CAN1数据的处理]
+ */
+
+__task void CAN1_Rec(void)
+{
+	Power_TypeDef Power;
+	NRF_PowerData_TypeDef* NRF_Data_P;
+	CanRxMsg *msg_rece ;//指向邮箱中的信息
+	can_filter_Mask_config(CanFilter_0|CanFifo_0|Can_STDID|Can_DataType,RecvCanID,0x3ff);//筛选器:|编号|FIFOx|ID类型|帧类型|ID|屏蔽位(0x3ff,0x1FFFFFFF)|
+	while(1)
+ 	{
+		if (CAN_receive (1, 0,&msg_rece,200) != OS_R_TMO)//接收到CAN数据
+		{
+			if(msg_rece->StdId == RecvCanID)
+			{
+				
+				NRF_Data_P=(NRF_PowerData_TypeDef*)&msg_rece->Data[0];
+				//左右
+				Power.delta_yaw=((float)NRF_Data_P->delta_yaw-2048);//-2048--+2048
+				//翻滚，实际中不怎么用到
+				Power.roll=((float)NRF_Data_P->roll-2048);//-2048--+2048
+				//高低
+				Power.heigth_power=((float)NRF_Data_P->heigth_power-2048);//-2048--+2048
+				//前进
+				Power.go_ahead_power=(float)NRF_Data_P->go_ahead_power;
+				Power.sw_left=(float)NRF_Data_P->Left_Key;
+				Power.sw_right=(float)NRF_Data_P->right_Key;
+
+				//潜水器深度+翻滚
+				motor_dirver(Normal,3,Power.heigth_power+Power.roll);
+				motor_dirver(Normal,4,Power.heigth_power-Power.roll);
+				//潜水器前进+偏航
+				motor_dirver(Normal,2,Power.go_ahead_power+Power.delta_yaw);
+				motor_dirver(Normal,1,Power.go_ahead_power-Power.delta_yaw);				
+
+						
+				os_evt_set(BIT_0,HandleDisconnectCheck);//设置HandleDisconnectCheck的标志位，HandleDisconnectCheck由挂起转到运行
+				
+				os_mut_wait (&mutex_u1, 0xffff);
+				printf("Can Recev :%d\r\n",msg_rece->Data[0]);
+				os_mut_release (&mutex_u1);	
+			 }
+		}
+	}
+}
+```
+
+### RTX小结
+[RTX操作系统简介](http://songliu2003.blog.163.com/blog/static/2958226420080129139249/ "RTX操作系统简介")
+
+任务管理、任务创建和删除、任务挂起和恢复、时间片轮转调度、系统内部任务（包括钩子函数）、中断和时间管理、软件定时器。事件标志组用于同步，信号量用于共享资源。
+
+### CAN配置
+[CAN基础](https://wenku.baidu.com/view/d2b7d79919e8b8f67c1cb9a1.html "CAN基础")：相当于网络协议的物理层+数据链路层+应用层，是有检测信道的
+
+[CAN ID滤波器分析](http://blog.csdn.net/flydream0/article/details/8148791 "CAN ID滤波器分析")：can通讯速率，是高速还是低速；帧都是支持的can2.0A/B吗？帧格式是否一致；过滤原则有没有问题等最好检查一下
+
+### PCB制板
+Uart2CAN：
+
+电容放置、差分线平行且相等、分模块设计，直线原则、先考虑VCC再连接元件最后覆铜过孔到地、指针找元件等快捷键
+
+Driver：
+
+使用矩形板画粗线、稳压二极管负极接高电平、放置大量过孔的技巧是将网格放大
+
+工厂制板：
+
+使用嘉立创SMT贴片，选封装时，在官网[可贴片元器件列表](http://www.sz-jlc.com/consumer/index.do?s=1502706529422)查询是否有对应的SMT贴片元件，如果没有只能买元件焊，这时候画PCB时多留点空间；如果有，则把元件画得紧凑些。
